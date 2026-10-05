@@ -152,7 +152,7 @@ sort_versions() {
 aliases_from_tags() {
   local raw="$1"
   # Remove version segment and enclosing parentheses/brackets
-  raw=$(sed -E 's/^\*?[[:space:]]*v[0-9]+\.[0-9]+\.[0-9]+[^[:alnum:]]*//' <<< "$raw")
+  raw=$(sed -E 's/^\*?[[:space:]]*v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)*[^[:alnum:]]*//' <<< "$raw")
   raw=$(tr -d '()' <<< "$raw")
   raw="${raw//,/ }"
 
@@ -210,7 +210,7 @@ gather_version_info() {
   for inst_ver in "${INST_VERS[@]}"; do
     # Escape the version string for regex
     local esc_ver="${inst_ver//./\\.}"
-    line=$(grep -E "^\*?[[:space:]]*${esc_ver}" <<< "$ls_output" | grep -vE '^\*?[[:space:]]*system' | head -n1)
+    line=$(grep -E "^\*?[[:space:]]*${esc_ver}([[:space:]]|$)" <<< "$ls_output" | grep -vE '^\*?[[:space:]]*system' | head -n1)
     
     tags=$(aliases_from_tags "$line" | paste -sd' ' -)
 

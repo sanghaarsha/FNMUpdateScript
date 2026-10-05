@@ -1,0 +1,5 @@
+* v18.19.0 legacy
+* v20.15.0 lts-iron
+* v22.11.0 lts, default
+* v23.1.0 latest
+* system v22.11.0

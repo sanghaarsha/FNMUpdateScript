@@ -1,0 +1,22 @@
+# Temporary and Test Artifacts
+/tmp/
+fnm_test_sandbox_*
+fnm_calls.log
+*.log
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor and IDE configurations
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak

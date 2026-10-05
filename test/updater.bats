@@ -168,3 +168,69 @@ load "helpers/mocks"
 
   [[ "$output" =~ "Unknown option '--unknown-flag'" ]]
 }
+
+@test "Bug 1: Version Collisions - Supports multiple installed versions on the same major line" {
+  set_installed_versions "* v20.10.0 legacy
+* v20.17.0 testing"
+  set_remote_versions "v20.10.0
+v20.17.0
+v20.18.2"
+
+  run "$PROJECT_ROOT/fnm_update.sh" -y
+  assert_success
+
+  # Verify BOTH versions are updated independently
+  assert_fnm_called "fnm install v20.18.2"
+  assert_fnm_called "fnm uninstall v20.10.0"
+  assert_fnm_called "fnm uninstall v20.17.0"
+  
+  # Check alias migration
+  assert_fnm_called "fnm alias v20.18.2 legacy"
+  assert_fnm_called "fnm alias v20.18.2 testing"
+}
+
+@test "Bug 2: Unintentional Stable-to-RC Upgrades are prevented" {
+  set_installed_versions "* v22.11.0 default"
+  set_remote_versions "v22.11.0
+v22.12.0-rc.1"
+
+  run "$PROJECT_ROOT/fnm_update.sh" -y
+  assert_success
+
+  # Target resolves to up-to-date rather than RC
+  [[ "$output" =~ "All installed Node.js versions are already up to date" ]]
+  assert_fnm_not_called "fnm install"
+}
+
+@test "RC-to-RC Promotion: RC upgrades to latest RC or Stable" {
+  set_installed_versions "* v23.0.0-rc.1 testing"
+  set_remote_versions "v23.0.0-rc.1
+v23.0.0-rc.2
+v23.0.0"
+
+  run "$PROJECT_ROOT/fnm_update.sh" -y
+  assert_success
+
+  # Target upgrades to v23.0.0
+  assert_fnm_called "fnm install v23.0.0"
+}
+
+@test "Bug 3 & 4: Punctuation is stripped and dynamic markers (current/system) are ignored" {
+  set_installed_versions "* v20.18.0 (default, lts-iron, current, system)"
+  set_remote_versions "v20.18.0
+v20.18.2"
+
+  run "$PROJECT_ROOT/fnm_update.sh" -y
+  assert_success
+
+  assert_fnm_called "fnm install v20.18.2"
+  
+  # Valid aliases are applied cleanly
+  assert_fnm_called "fnm alias v20.18.2 default"
+  assert_fnm_called "fnm alias v20.18.2 lts-iron"
+
+  # Dynamic markers and parentheses are stripped/ignored
+  assert_fnm_not_called "fnm alias v20.18.2 current"
+  assert_fnm_not_called "fnm alias v20.18.2 system"
+  assert_fnm_not_called "fnm alias v20.18.2 (default"
+}

@@ -27,9 +27,6 @@ if ((BASH_VERSINFO[0] < 4)); then
   echo "On macOS the default system bash is 3.2 — install a newer one with 'brew install bash'." >&2
   exit 1
 fi
-
-shopt -s nocasematch
-
 # ---------------------------------------------------------------------- Colors -
 BOLD="" RESET="" RED="" GREEN="" YELLOW="" CYAN="" BLUE=""
 setup_colors() {
@@ -78,7 +75,7 @@ confirm() {
     return 0
   fi
   read -rp "${prompt} [y/N] " reply
-  [[ "$reply" =~ ^[Yy]([Ee][Ss])?$ ]]
+  [[ "${reply,,}" =~ ^y(es)?$ ]]
 }
 
 # ------------------------------------------------------- Trap signal handlers -
@@ -153,112 +150,132 @@ sort_versions() {
 # aliases_from_tags TAGS — prints one alias name per line, given a tag string
 # straight from `fnm ls` (e.g. "lts, default" or "lts default").
 aliases_from_tags() {
-  local tags="${1//,/ }"
+  local raw="$1"
+  # Remove version segment and enclosing parentheses/brackets
+  raw=$(sed -E 's/^\*?[[:space:]]*v[0-9]+\.[0-9]+\.[0-9]+[^[:alnum:]]*//' <<< "$raw")
+  raw=$(tr -d '()' <<< "$raw")
+  raw="${raw//,/ }"
+
   local part
-  for part in $tags; do
+  for part in $raw; do
+    # Skip dynamic status indicators
+    [[ "$part" =~ ^(current|system)$ ]] && continue
     [[ -n "$part" ]] && printf '%s\n' "$part"
   done
 }
 
-# ------------------------------------------------------------ Data Model ------
 declare -A CUR_VER CUR_TAGS NEW_VER NEEDS_UPDATE
-MAJORS=()
+INST_VERS=()
 UPDATE_LIST=()
 DONE_LIST=()
 
-# detect_majors LS_OUTPUT TARGET_MAJORS — extracts unique installed major versions
-detect_majors() {
+# detect_versions LS_OUTPUT TARGET_MAJORS — extracts unique installed versions
+detect_versions() {
   local ls_output="$1"
   shift || true
   local filter_majors=("$@")
 
-  local all_majors=()
-  mapfile -t all_majors < <(
+  local all_vers=()
+  mapfile -t all_vers < <(
     grep -E '^\*?[[:space:]]*v[0-9]+\.[0-9]+\.[0-9]+' <<< "$ls_output" \
-      | grep -v 'system' \
-      | sed -E 's/^\*?[[:space:]]*v([0-9]+)\..*/\1/' \
-      | sort -n -u
+      | grep -vE '^\*?[[:space:]]*system' \
+      | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?' \
+      | sort -V -u
   )
 
-  MAJORS=()
+  INST_VERS=()
   if [[ ${#filter_majors[@]} -gt 0 ]]; then
-    for m in "${all_majors[@]}"; do
+    for v in "${all_vers[@]}"; do
+      local m
+      m=$(echo "$v" | sed -E 's/^v([0-9]+)\..*/\1/')
       for target in "${filter_majors[@]}"; do
         target="${target#v}"
         if [[ "$m" == "$target" ]]; then
-          MAJORS+=("$m")
+          INST_VERS+=("$v")
           break
         fi
       done
     done
   else
-    MAJORS=("${all_majors[@]}")
+    INST_VERS=("${all_vers[@]}")
   fi
 }
 
-# gather_version_info LS_OUTPUT LS_REMOTE_OUTPUT — for each major in MAJORS,
+# gather_version_info LS_OUTPUT LS_REMOTE_OUTPUT — for each installed version,
 # records installed version, associated tags/aliases, latest remote release, and update state.
 gather_version_info() {
   local ls_output="$1" ls_remote_output="$2"
-  local major line ver tags latest
+  local inst_ver line tags latest major
 
-  for major in "${MAJORS[@]}"; do
-    line=$(grep -E "^\*?[[:space:]]*v${major}\." <<< "$ls_output" | grep -v 'system' | head -n1)
-    ver=$(grep -oE "v${major}\.[0-9]+\.[0-9]+" <<< "$line" | head -n1)
-    ver="${ver#v}"
-    tags=$(sed -E "s/^\*?[[:space:]]*v${major}\.[0-9]+\.[0-9]+[[:space:]]*//" <<< "$line")
+  for inst_ver in "${INST_VERS[@]}"; do
+    # Escape the version string for regex
+    local esc_ver="${inst_ver//./\\.}"
+    line=$(grep -E "^\*?[[:space:]]*${esc_ver}" <<< "$ls_output" | grep -vE '^\*?[[:space:]]*system' | head -n1)
+    
+    tags=$(aliases_from_tags "$line" | paste -sd' ' -)
 
-    CUR_VER["$major"]="$ver"
-    CUR_TAGS["$major"]="$tags"
+    CUR_VER["$inst_ver"]="${inst_ver#v}"
+    CUR_TAGS["$inst_ver"]="$tags"
 
-    latest=$(grep -E "^v${major}\." <<< "$ls_remote_output" \
-      | sed -E 's/ \(.*//' | sort_versions | tail -n1)
-    latest="${latest#v}"
-    NEW_VER["$major"]="$latest"
+    major=$(echo "$inst_ver" | sed -E 's/^v([0-9]+)\..*/\1/')
 
-    if [[ -n "$latest" && "$latest" != "$ver" ]]; then
-      NEEDS_UPDATE["$major"]="yes"
+    # Restrict lookup based on stability of the installed version
+    if [[ "$inst_ver" == *-* ]]; then
+      # Installed version is a pre-release: allow newer pre-release or GA in this major
+      latest=$(grep -E "^v${major}\." <<< "$ls_remote_output" \
+        | sed -E 's/ \(.*//' | sort_versions | tail -n1)
     else
-      NEEDS_UPDATE["$major"]="no"
+      # Installed version is stable: match strictly GA versions
+      latest=$(grep -E "^v${major}\.[0-9]+\.[0-9]+$" <<< "$ls_remote_output" \
+        | sed -E 's/ \(.*//' | sort_versions | tail -n1)
+    fi
+
+    latest="${latest#v}"
+    NEW_VER["$inst_ver"]="$latest"
+
+    if [[ -n "$latest" && "$latest" != "${inst_ver#v}" ]]; then
+      NEEDS_UPDATE["$inst_ver"]="yes"
+    else
+      NEEDS_UPDATE["$inst_ver"]="no"
     fi
   done
 }
 
-# print_summary — renders the Major/Installed/Latest/Aliases/Status table
+# print_summary — renders the Version/Installed/Latest/Aliases/Status table
 print_summary() {
-  local major aliases status
+  local inst_ver aliases status
 
-  printf "%-8s %-16s %-16s %-22s %s\n" "Major" "Installed" "Latest" "Aliases" "Status"
+  printf "%-16s %-16s %-22s %s\n" "Installed" "Latest" "Aliases" "Status"
   printf '%s\n' "----------------------------------------------------------------------------------"
 
-  for major in "${MAJORS[@]}"; do
-    aliases=$(aliases_from_tags "${CUR_TAGS[$major]}" | paste -sd' ' -)
+  for inst_ver in "${INST_VERS[@]}"; do
+    aliases=$(aliases_from_tags "${CUR_TAGS[$inst_ver]}" | paste -sd' ' -)
     [[ -z "$aliases" ]] && aliases="-"
 
-    if [[ "${NEEDS_UPDATE[$major]}" == "yes" ]]; then
+    if [[ "${NEEDS_UPDATE[$inst_ver]}" == "yes" ]]; then
       status="${YELLOW}${BOLD}update available${RESET}"
-      UPDATE_LIST+=("$major")
+      UPDATE_LIST+=("$inst_ver")
     else
       status="${GREEN}up to date${RESET}"
     fi
 
-    printf "v%-7s v%-15s v%-15s %-22s %s\n" \
-      "$major" "${CUR_VER[$major]}" "${NEW_VER[$major]:-?}" "$aliases" "$status"
+    printf "v%-15s v%-15s %-22s %s\n" \
+      "${CUR_VER[$inst_ver]}" "${NEW_VER[$inst_ver]:-?}" "$aliases" "$status"
   done
 }
 
-# update_major MAJOR — installs new version and seamlessly migrates attached aliases
-update_major() {
-  local major="$1"
-  local old="${CUR_VER[$major]}"
-  local new="${NEW_VER[$major]}"
+# update_version INST_VER — installs new version and seamlessly migrates attached aliases
+update_version() {
+  local inst_ver="$1"
+  local old="${CUR_VER[$inst_ver]}"
+  local new="${NEW_VER[$inst_ver]}"
   local alias
 
   echo
-  log_info "Updating ${CYAN}v${major}${RESET}: ${YELLOW}v${old}${RESET} -> ${GREEN}v${new}${RESET}..."
+  log_info "Updating ${CYAN}${inst_ver}${RESET}: ${YELLOW}v${old}${RESET} -> ${GREEN}v${new}${RESET}..."
 
   if ! fnm install "v${new}"; then
-    log_error "Installation failed for v${new} — leaving v${major} at v${old}, aliases untouched."
+    log_error "Installation failed for v${new} — leaving ${inst_ver} at v${old}, aliases untouched."
     return 1
   fi
 
@@ -271,34 +288,34 @@ update_major() {
     if ! fnm alias "v${new}" "$alias"; then
       log_warn "Failed to set alias '${alias}' -> v${new}."
     fi
-  done < <(aliases_from_tags "${CUR_TAGS[$major]}")
+  done < <(aliases_from_tags "${CUR_TAGS[$inst_ver]}")
 
   return 0
 }
 
-# perform_updates — executes update_major for each major in UPDATE_LIST
+# perform_updates — executes update_version for each version in UPDATE_LIST
 perform_updates() {
-  local major
+  local inst_ver
   DONE_LIST=()
-  for major in "${UPDATE_LIST[@]}"; do
-    if update_major "$major"; then
-      DONE_LIST+=("$major")
+  for inst_ver in "${UPDATE_LIST[@]}"; do
+    if update_version "$inst_ver"; then
+      DONE_LIST+=("$inst_ver")
     fi
   done
 }
 
-# print_done_summary — renders old -> new table of successfully updated majors
+# print_done_summary — renders old -> new table of successfully updated versions
 print_done_summary() {
-  local major
+  local inst_ver
 
   echo
   if [[ ${#DONE_LIST[@]} -gt 0 ]]; then
-    log_success "Upgrade completed (${#DONE_LIST[@]} major line(s) updated)."
-    printf "%-8s %-16s %-16s %s\n" "Major" "Old Version" "New Version" "Result"
+    log_success "Upgrade completed (${#DONE_LIST[@]} version(s) updated)."
+    printf "%-16s %-16s %s\n" "Old Version" "New Version" "Result"
     printf '%s\n' "------------------------------------------------------------"
-    for major in "${DONE_LIST[@]}"; do
-      printf "v%-7s v%-15s v%-15s %s\n" \
-        "$major" "${CUR_VER[$major]}" "${NEW_VER[$major]}" "${GREEN}SUCCESS${RESET}"
+    for inst_ver in "${DONE_LIST[@]}"; do
+      printf "v%-15s v%-15s %s\n" \
+        "${CUR_VER[$inst_ver]}" "${NEW_VER[$inst_ver]}" "${GREEN}SUCCESS${RESET}"
     done
   fi
 
@@ -308,9 +325,9 @@ print_done_summary() {
   fi
 }
 
-# cleanup_old_versions — uninstalls superseded versions for successfully updated majors
+# cleanup_old_versions — uninstalls superseded versions for successfully updated versions
 cleanup_old_versions() {
-  local major old
+  local inst_ver old
 
   [[ ${#DONE_LIST[@]} -eq 0 ]] && return 0
 
@@ -325,8 +342,8 @@ cleanup_old_versions() {
     return 0
   fi
 
-  for major in "${DONE_LIST[@]}"; do
-    old="${CUR_VER[$major]}"
+  for inst_ver in "${DONE_LIST[@]}"; do
+    old="${CUR_VER[$inst_ver]}"
     log_info "Removing superseded v${old}..."
     if ! fnm uninstall "v${old}"; then
       log_warn "Could not remove v${old} (it may still be in use by an active shell)."
@@ -448,19 +465,22 @@ main() {
   echo "${CYAN}${BOLD}Checking installed fnm-managed Node.js versions...${RESET}"
   echo
 
-  local ls_output ls_remote_output
-  ls_output="$(fnm ls 2>&1)" || {
+  local ls_output ls_remote_output raw_ls_output
+  raw_ls_output="$(fnm ls 2>&1)" || {
     log_error "Failed to retrieve installed fnm versions ('fnm ls' failed)."
     exit 1
   }
+  ls_output=$(printf '%s\n' "$raw_ls_output" | sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g')
 
-  ls_remote_output="$(fnm ls-remote 2>&1)" || {
+  local raw_remote_output
+  raw_remote_output="$(fnm ls-remote 2>&1)" || {
     log_error "Failed to retrieve remote Node.js versions ('fnm ls-remote' failed)."
     exit 1
   }
+  ls_remote_output=$(printf '%s\n' "$raw_remote_output" | sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g')
 
-  detect_majors "$ls_output" "${user_majors[@]}"
-  if [[ ${#MAJORS[@]} -eq 0 ]]; then
+  detect_versions "$ls_output" "${user_majors[@]}"
+  if [[ ${#INST_VERS[@]} -eq 0 ]]; then
     log_warn "No fnm-managed Node.js versions found matching criteria."
     return 0
   fi
@@ -475,7 +495,7 @@ main() {
   fi
 
   local prefixed=() m
-  for m in "${UPDATE_LIST[@]}"; do prefixed+=("v${m}"); done
+  for m in "${UPDATE_LIST[@]}"; do prefixed+=("${m}"); done
   echo "${BOLD}Updates available for:${RESET} ${CYAN}${prefixed[*]}${RESET}"
   echo
 

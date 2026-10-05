@@ -234,7 +234,13 @@ gather_version_info() {
     NEW_VER["$inst_ver"]="$latest"
 
     if [[ -n "$latest" && "$latest" != "${inst_ver#v}" ]]; then
-      NEEDS_UPDATE["$inst_ver"]="yes"
+      local higher
+      higher=$(printf "v%s\nv%s\n" "${inst_ver#v}" "$latest" | sort_versions | tail -n1)
+      if [[ "$higher" == "v$latest" ]]; then
+        NEEDS_UPDATE["$inst_ver"]="yes"
+      else
+        NEEDS_UPDATE["$inst_ver"]="no"
+      fi
     else
       NEEDS_UPDATE["$inst_ver"]="no"
     fi

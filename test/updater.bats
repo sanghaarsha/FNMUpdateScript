@@ -234,3 +234,23 @@ v20.18.2"
   assert_fnm_not_called "fnm alias v20.18.2 system"
   assert_fnm_not_called "fnm alias v20.18.2 (default"
 }
+
+@test "Edge Case: Prevents downgrade if locally installed version is newer than remote latest" {
+  set_installed_versions "* v20.20.2 archived
+* v22.23.3 prev_lts
+* v24.21.0 lts, default"
+  
+  set_remote_versions "v20.8.1
+v22.10.0
+v24.10.0"
+
+  run "$PROJECT_ROOT/fnm_update.sh" -y
+  assert_success
+
+  # Output should explicitly state that all versions are up to date
+  [[ "$output" =~ "All installed Node.js versions are already up to date." ]]
+  
+  # Ensure no install or uninstall attempts were made
+  assert_fnm_not_called "fnm install"
+  assert_fnm_not_called "fnm uninstall"
+}

@@ -97,9 +97,9 @@ require_fnm() {
 # ------------------------------------------------ Cross-Platform Version Sort -
 # Sort list of versions (e.g. v20.18.0 or 20.18.0) in ascending version order
 sort_versions() {
-  if printf '1\n2\n' | sort -V >/dev/null 2>&1; then
+  if [ "$(printf 'v1.2\nv1.10\n' | sort -V 2>/dev/null | tail -n1)" = "v1.10" ]; then
     sort -V
-  elif command -v gsort >/dev/null 2>&1 && printf '1\n2\n' | gsort -V >/dev/null 2>&1; then
+  elif command -v gsort >/dev/null 2>&1 && [ "$(printf 'v1.2\nv1.10\n' | gsort -V 2>/dev/null | tail -n1)" = "v1.10" ]; then
     gsort -V
   else
     # Portable fallback for BSD sort (macOS) without GNU sort -V
